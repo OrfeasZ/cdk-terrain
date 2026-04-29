@@ -9,6 +9,7 @@ import {
   TerraformCount,
   TerraformVariable,
   Token,
+  forExpression,
 } from "../lib";
 import { OtherTestResource, TestResource } from "./helper";
 import { TestDataSource } from "./helper/data-source";
@@ -527,5 +528,141 @@ test("for expressions from iterators", () => {
   expect(synth).toHaveProperty(
     "resource.test_resource.test.tags.keys",
     "${[ for key, val in toset(var.list): key]}",
+  );
+});
+
+test("forExpressionForList with fromComplexList uses raw list, not map conversion", () => {
+  const app = Testing.app();
+  const stack = new TerraformStack(app, "test");
+  const variable = new TerraformVariable(stack, "list", {});
+  const it = TerraformIterator.fromComplexList(
+    variable.listValue as any,
+    "name",
+  );
+
+  new TestResource(stack, "test", {
+    name: Token.asString(
+      it.forExpressionForList(`val.id if val.name == "foo"`),
+    ),
+  });
+
+  const synth = JSON.parse(Testing.synth(stack));
+  // Should iterate the raw list, not the map conversion
+  expect(synth).toHaveProperty(
+    "resource.test_resource.test.name",
+    '${[ for key, val in var.list: val.id if val.name == "foo"]}',
+  );
+});
+
+test("keys() on fromComplexList yields raw list indices", () => {
+  const app = Testing.app();
+  const stack = new TerraformStack(app, "test");
+  const variable = new TerraformVariable(stack, "list", {});
+  const it = TerraformIterator.fromComplexList(
+    variable.listValue as any,
+    "name",
+  );
+
+  new TestResource(stack, "test", {
+    name: Token.asString(it.keys()),
+  });
+
+  const synth = JSON.parse(Testing.synth(stack));
+  expect(synth).toHaveProperty(
+    "resource.test_resource.test.name",
+    "${[ for key, val in var.list: key]}",
+  );
+});
+
+test("values() on fromComplexList iterates raw list", () => {
+  const app = Testing.app();
+  const stack = new TerraformStack(app, "test");
+  const variable = new TerraformVariable(stack, "list", {});
+  const it = TerraformIterator.fromComplexList(
+    variable.listValue as any,
+    "name",
+  );
+
+  new TestResource(stack, "test", {
+    name: Token.asString(it.values()),
+  });
+
+  const synth = JSON.parse(Testing.synth(stack));
+  expect(synth).toHaveProperty(
+    "resource.test_resource.test.name",
+    "${[ for key, val in var.list: val]}",
+  );
+});
+
+test("pluckProperty on fromComplexList iterates raw list", () => {
+  const app = Testing.app();
+  const stack = new TerraformStack(app, "test");
+  const variable = new TerraformVariable(stack, "list", {});
+  const it = TerraformIterator.fromComplexList(
+    variable.listValue as any,
+    "name",
+  );
+
+  new TestResource(stack, "test", {
+    name: Token.asString(it.pluckProperty("id")),
+  });
+
+  const synth = JSON.parse(Testing.synth(stack));
+  expect(synth).toHaveProperty(
+    "resource.test_resource.test.name",
+    "${[ for key, val in var.list: val.id]}",
+  );
+});
+
+test("forExpression sets iteratorContext so iterator.getString in body renders as val.<attr>", () => {
+  const app = Testing.app();
+  const stack = new TerraformStack(app, "test");
+  const variable = new TerraformVariable(stack, "list", {});
+  const it = TerraformIterator.fromList(variable.listValue as any);
+
+  // Hand-rolled use of the advanced forExpression() API. iterator.getString
+  // routes through _getValue(), which is a Lazy that reads
+  // context.iteratorContext. ForExpression.resolve() must set it to
+  // "FOR_EXPRESSION" so the body renders `val.id` rather than `each.value.id`.
+  new TestResource(stack, "test", {
+    name: Token.asString(
+      forExpression(Fn.toset(variable.listValue as any), it.getString("id")),
+    ),
+  });
+
+  const synth = JSON.parse(Testing.synth(stack));
+  expect(synth).toHaveProperty(
+    "resource.test_resource.test.name",
+    "${[ for key, val in toset(var.list): val.id]}",
+  );
+});
+
+test("fromComplexList renders map-wrapped for_each and raw-list for-expressions on the same iterator", () => {
+  const app = Testing.app();
+  const stack = new TerraformStack(app, "test");
+  const variable = new TerraformVariable(stack, "list", {});
+  const it = TerraformIterator.fromComplexList(
+    variable.listValue as any,
+    "name",
+  );
+
+  new TestResource(stack, "test", {
+    forEach: it,
+    name: it.getString("id"),
+    tags: { ids: Token.asString(it.pluckProperty("id")) },
+  });
+
+  const synth = JSON.parse(Testing.synth(stack));
+  expect(synth).toHaveProperty(
+    "resource.test_resource.test.for_each",
+    "${{ for key, val in var.list: val.name => val }}",
+  );
+  expect(synth).toHaveProperty(
+    "resource.test_resource.test.name",
+    "${each.value.id}",
+  );
+  expect(synth).toHaveProperty(
+    "resource.test_resource.test.tags.ids",
+    "${[ for key, val in var.list: val.id]}",
   );
 });
